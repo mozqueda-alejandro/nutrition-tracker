@@ -102,7 +102,7 @@ def main():
 
     sql_food_log = '''
         CREATE TABLE IF NOT EXISTS food_log (
-            id INT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             date_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
             measurement_type CHAR(1) NOT NULL
             -- g = gram_measurement, p = portion_measurement
@@ -207,6 +207,54 @@ def main():
     food_portion.rename(columns={"fdc_id": "food_id"}, inplace=True)
     food_portion.to_sql("food_portion", con=conn_sqlalchemy, if_exists="append", index=False)
     print("FOOD PORTION: \n", food_portion.head())
+
+
+    ############### Food Log #################
+
+    # Logs can be of 2 types:
+    # gram_measurement (date_time, measurement_type, amount, food_id)
+    # portion_measurement (date_time, measurement_type, portion_size, food_portion_id)
+    user_inputs = [("2004-10-19 10:23:54", 'g', 100, 321358),
+                   ("2021-01-02 01:00:00", 'g', 50, 321358),
+                   ("2021-01-02 01:00:00", 'p', 1, 0)]
+
+    sql_insert_food_log = '''INSERT INTO food_log (date_time, measurement_type) VALUES (%s, %s) RETURNING id'''
+    sql_insert_gram = '''INSERT INTO gram_measurement (id, amount, food_id) VALUES (%s, %s, %s)'''
+    sql_insert_portion = '''INSERT INTO portion_measurement (id, portion_size, food_portion_id) VALUES (%s, %s, %s)'''
+
+    for date_time, measurement_type, quantifier, fk_id in user_inputs:
+        cursor.execute(sql_insert_food_log, (date_time, measurement_type))
+        measurement_id = cursor.fetchone()[0]
+
+        if measurement_type == 'g':
+            cursor.execute(sql_insert_gram, (measurement_id, quantifier, fk_id))
+        elif measurement_type == 'p':
+            cursor.execute(sql_insert_portion, (measurement_id, quantifier, fk_id))
+
+    target_day = "2021-01-02"
+    sql_get_food_log = f'''
+        SELECT
+            TO_CHAR(f.date_time, 'YYYY-MM-DD HH24:MI:SS'),
+            f.measurement_type,
+            CASE
+                WHEN f.measurement_type = 'g' THEN g.amount
+                WHEN f.measurement_type = 'p' THEN p.portion_size
+            END AS quantifier,
+            CASE
+                WHEN f.measurement_type = 'g' THEN g.food_id
+                WHEN f.measurement_type = 'p' THEN p.food_portion_id
+            END AS fk_id
+        FROM
+            food_log f
+        LEFT JOIN gram_measurement g ON f.id = g.id AND f.measurement_type = 'g'
+        LEFT JOIN portion_measurement p ON f.id = p.id AND f.measurement_type = 'p'
+        WHERE
+            f.date_time::date = '{target_day}'::date
+    '''
+    cursor.execute(sql_get_food_log)
+    food_log = cursor.fetchall()
+    print(food_log)
+
 
     conn_psycopg.commit()
     conn_psycopg.close()
