@@ -3,7 +3,9 @@ import psycopg2 as psycopg
 import os
 
 from dotenv import load_dotenv
+from psycopg2 import extras
 from sqlalchemy import create_engine
+from tabulate import tabulate
 
 def configure():
     load_dotenv()
@@ -104,8 +106,8 @@ def main():
         CREATE TABLE IF NOT EXISTS food_log (
             id SERIAL PRIMARY KEY,
             date_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-            measurement_type CHAR(1) NOT NULL
             -- g = gram_measurement, p = portion_measurement
+            measurement_type CHAR(1) NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_food_log_food_portion_id ON food_log (id);
     '''
@@ -208,42 +210,57 @@ def main():
     food_portion.to_sql("food_portion", con=conn_sqlalchemy, if_exists="append", index=False)
     print("FOOD PORTION: \n", food_portion.head())
 
-
-    ############### Food Log #################
-
+    ############## INSERT Food Log #################
     # Logs can be of 2 types:
     # gram_measurement (date_time, measurement_type, amount, food_id)
     # portion_measurement (date_time, measurement_type, portion_size, food_portion_id)
     user_inputs = [("2004-10-19 10:23:54", 'g', 100, 321358),
                    ("2021-01-02 01:00:00", 'g', 50, 321358),
-                   ("2021-01-02 01:00:00", 'p', 1, 0)]
+                   ("2021-01-02 01:00:00", 'p', 1, 0),
+                   ("2021-01-02 02:00:00", 'p', 1, 1)]
 
-    sql_insert_food_log = '''INSERT INTO food_log (date_time, measurement_type) VALUES (%s, %s) RETURNING id'''
-    sql_insert_gram = '''INSERT INTO gram_measurement (id, amount, food_id) VALUES (%s, %s, %s)'''
-    sql_insert_portion = '''INSERT INTO portion_measurement (id, portion_size, food_portion_id) VALUES (%s, %s, %s)'''
+    proc_insert_log = "insert_log"
+    sql_food_log = f'''
+        CREATE OR REPLACE FUNCTION {proc_insert_log}(
+            date_time_param TIMESTAMP WITHOUT TIME ZONE,
+            measurement_type_param CHAR(1),
+            quantifier REAL DEFAULT NULL,
+            fk_id INT DEFAULT NULL
+        )
+        RETURNS VOID
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            measurement_id_param INT;
+        BEGIN
+            -- Step 1: Insert into the supertype table
+            INSERT INTO food_log (date_time, measurement_type)
+            VALUES (date_time_param, measurement_type_param)
+            RETURNING id INTO measurement_id_param;
 
-    for date_time, measurement_type, quantifier, fk_id in user_inputs:
-        cursor.execute(sql_insert_food_log, (date_time, measurement_type))
-        measurement_id = cursor.fetchone()[0]
+            -- Step 2: Insert into the corresponding subtype table based on measurement_type
+            IF measurement_type_param = 'g' THEN
+                INSERT INTO gram_measurement (id, amount, food_id)
+                VALUES (measurement_id_param, quantifier, fk_id);
+            ELSIF measurement_type_param = 'p' THEN
+                INSERT INTO portion_measurement (id, portion_size, food_portion_id)
+                VALUES (measurement_id_param, quantifier, fk_id);
+            END IF;
+        END;
+        $$;
+    '''
+    cursor.execute(sql_food_log)
+    for input_params in user_inputs:
+        cursor.callproc(proc_insert_log, input_params)
 
-        if measurement_type == 'g':
-            cursor.execute(sql_insert_gram, (measurement_id, quantifier, fk_id))
-        elif measurement_type == 'p':
-            cursor.execute(sql_insert_portion, (measurement_id, quantifier, fk_id))
-
+    ############### SELECT Food Log #################
     target_day = "2021-01-02"
     sql_get_food_log = f'''
         SELECT
-            TO_CHAR(f.date_time, 'YYYY-MM-DD HH24:MI:SS'),
+            TO_CHAR(f.date_time, 'YYYY-MM-DD HH24:MI:SS') AS date_time,
             f.measurement_type,
-            CASE
-                WHEN f.measurement_type = 'g' THEN g.amount
-                WHEN f.measurement_type = 'p' THEN p.portion_size
-            END AS quantifier,
-            CASE
-                WHEN f.measurement_type = 'g' THEN g.food_id
-                WHEN f.measurement_type = 'p' THEN p.food_portion_id
-            END AS fk_id
+            COALESCE(g.amount, p.portion_size) AS quantifier,
+            COALESCE(g.food_id, p.food_portion_id) AS fk_id
         FROM
             food_log f
         LEFT JOIN gram_measurement g ON f.id = g.id AND f.measurement_type = 'g'
@@ -253,7 +270,8 @@ def main():
     '''
     cursor.execute(sql_get_food_log)
     food_log = cursor.fetchall()
-    print(food_log)
+    columns = [desc[0] for desc in cursor.description]
+    print(tabulate(food_log, headers=columns, tablefmt="psql"))
 
 
     conn_psycopg.commit()
