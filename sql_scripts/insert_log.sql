@@ -5,7 +5,6 @@ CREATE OR REPLACE FUNCTION insert_log(
     fk_id INT DEFAULT NULL
 )
     RETURNS VOID
-    LANGUAGE plpgsql
 AS
 $$
 DECLARE
@@ -24,5 +23,6 @@ BEGIN
         INSERT INTO portion_measurement (id, portion_size, food_portion_id)
         VALUES (measurement_id_param, quantifier, fk_id);
     END IF;
+    RETURN;
 END;
-$$;
+$$ LANGUAGE plpgsql;
